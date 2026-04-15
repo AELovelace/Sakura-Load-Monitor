@@ -116,11 +116,22 @@ def ensure_runtime_and_relaunch() -> bool:
 
     try:
         if not target_python.exists():
-            subprocess.run(
-                ["py", "-3.11", "-m", "venv", ".venv311"],
-                cwd=str(project_root),
-                check=True,
-            )
+            created = False
+            for _ver in ("3.11", "3.12", "3.13"):
+                try:
+                    subprocess.run(
+                        ["py", f"-{_ver}", "-m", "venv", ".venv311"],
+                        cwd=str(project_root),
+                        check=True,
+                    )
+                    created = True
+                    break
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+            if not created:
+                print("Bootstrap failed: no compatible Python (3.11–3.13) found via the 'py' launcher.")
+                print("Install Python 3.11, 3.12, or 3.13 to enable LHM and AMD GPU telemetry.")
+                return False
 
         subprocess.run(
             [str(target_python), "-m", "pip", "install", "--upgrade", "pip"],
