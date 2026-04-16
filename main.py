@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -579,6 +580,7 @@ class LibreHardwareMonitorBridge:
 class MetricRow(QWidget):
     def __init__(self, title: str, with_bar: bool = True) -> None:
         super().__init__()
+        self.with_bar = with_bar
         self.title = QLabel(title)
         self.title.setObjectName("MetricTitle")
         self.value = QLabel("-")
@@ -604,6 +606,12 @@ class MetricRow(QWidget):
         root.setSpacing(4)
         root.addLayout(top)
         root.addWidget(self.bar)
+
+    @staticmethod
+    def temperature_to_percent(temp_c: float, cool_c: float = 30.0, hot_c: float = 90.0) -> float:
+        if hot_c <= cool_c:
+            return max(0.0, min(100.0, temp_c))
+        return max(0.0, min(100.0, (temp_c - cool_c) * 100.0 / (hot_c - cool_c)))
 
     @staticmethod
     def _blend_channel(start: int, end: int, ratio: float) -> int:
@@ -682,8 +690,13 @@ class GPUCard(QGroupBox):
         layout.addWidget(self.shared_row)
         layout.addWidget(self.util_row)
         layout.addWidget(self.temp_row)
-        layout.addWidget(self.clock_row)
-        layout.addWidget(self.power_row)
+
+        details_row = QHBoxLayout()
+        details_row.setContentsMargins(0, 0, 0, 0)
+        details_row.setSpacing(12)
+        details_row.addWidget(self.clock_row)
+        details_row.addWidget(self.power_row)
+        layout.addLayout(details_row)
 
     def apply_stats(self, stats: GPUStats) -> None:
         if stats.vram_total_mib <= 0:
@@ -710,7 +723,7 @@ class GPUCard(QGroupBox):
         if stats.temperature_c is None:
             self.temp_row.set_percent(0, "N/A")
         else:
-            temp_percent = max(0.0, min(100.0, stats.temperature_c))
+            temp_percent = MetricRow.temperature_to_percent(stats.temperature_c)
             self.temp_row.set_percent(temp_percent, f"{stats.temperature_c:.1f} C")
 
         if stats.core_clock_mhz is None:
@@ -741,10 +754,15 @@ class SystemCard(QGroupBox):
         layout.setSpacing(12)
         layout.addWidget(self.cpu_row)
         layout.addWidget(self.cpu_temp_row)
-        layout.addWidget(self.cpu_power_row)
         layout.addWidget(self.ram_row)
         layout.addWidget(self.ram_temp_row)
-        layout.addWidget(self.ram_power_row)
+
+        power_row = QHBoxLayout()
+        power_row.setContentsMargins(0, 0, 0, 0)
+        power_row.setSpacing(12)
+        power_row.addWidget(self.cpu_power_row)
+        power_row.addWidget(self.ram_power_row)
+        layout.addLayout(power_row)
 
     def apply_stats(self, stats: SystemStats) -> None:
         self.cpu_row.set_percent(stats.cpu_percent, f"{stats.cpu_percent:.1f}%")
@@ -752,7 +770,7 @@ class SystemCard(QGroupBox):
         if stats.cpu_temp_c is None:
             self.cpu_temp_row.set_percent(0, "N/A")
         else:
-            cpu_temp_percent = max(0.0, min(100.0, stats.cpu_temp_c))
+            cpu_temp_percent = MetricRow.temperature_to_percent(stats.cpu_temp_c)
             self.cpu_temp_row.set_percent(cpu_temp_percent, f"{stats.cpu_temp_c:.1f} C")
 
         if stats.cpu_power_watts is None:
@@ -768,7 +786,7 @@ class SystemCard(QGroupBox):
         if stats.ram_temp_c is None:
             self.ram_temp_row.set_percent(0, "N/A")
         else:
-            ram_temp_percent = max(0.0, min(100.0, stats.ram_temp_c))
+            ram_temp_percent = MetricRow.temperature_to_percent(stats.ram_temp_c)
             self.ram_temp_row.set_percent(ram_temp_percent, f"{stats.ram_temp_c:.1f} C")
 
         if stats.ram_power_watts is None:
@@ -791,11 +809,18 @@ class DiagnosticsCard(QGroupBox):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 16, 14, 14)
         layout.setSpacing(12)
-        layout.addWidget(self.python_row)
-        layout.addWidget(self.runtime_row)
-        layout.addWidget(self.nvml_row)
-        layout.addWidget(self.lhm_row)
-        layout.addWidget(self.lhm_status_row)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+        grid.addWidget(self.python_row, 0, 0)
+        grid.addWidget(self.runtime_row, 0, 1)
+        grid.addWidget(self.nvml_row, 1, 0)
+        grid.addWidget(self.lhm_row, 1, 1)
+        grid.addWidget(self.lhm_status_row, 2, 0, 1, 2)
+
+        layout.addLayout(grid)
 
     def apply_stats(
         self,
@@ -952,6 +977,8 @@ class Dashboard(QMainWindow):
                 target.core_clock_mhz = source.core_clock_mhz
             if target.power_watts is None and source.power_watts is not None:
                 target.power_watts = source.power_watts
+            if target.temperature_c is None and source.temperature_c is not None:
+                target.temperature_c = source.temperature_c
 
         # Match each NVML GPU with at most one LHM GPU so identical names don't collapse.
         for nvml_item in merged:
