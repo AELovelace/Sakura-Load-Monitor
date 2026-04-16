@@ -65,6 +65,7 @@ class GPUStats:
     core_clock_mhz: Optional[int]
     util_percent: Optional[float]
     power_watts: Optional[float]
+    temperature_c: Optional[float] = None
     shared_total_mib: int = 0
     shared_used_mib: int = 0
     shared_percent: float = 0.0
@@ -74,10 +75,12 @@ class GPUStats:
 class SystemStats:
     cpu_percent: float
     cpu_power_watts: Optional[float]
+    cpu_temp_c: Optional[float]
     ram_total_gib: float
     ram_used_gib: float
     ram_percent: float
     ram_power_watts: Optional[float]
+    ram_temp_c: Optional[float]
 
 
 class CoverBackgroundWidget(QWidget):
@@ -246,6 +249,14 @@ class NvidiaMonitor:
                 except Exception:
                     power_watts = None
 
+                temperature_c: Optional[float] = None
+                try:
+                    temperature_c = float(
+                        pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                    )
+                except Exception:
+                    temperature_c = None
+
                 stats.append(
                     GPUStats(
                         name=str(name),
@@ -255,6 +266,7 @@ class NvidiaMonitor:
                         core_clock_mhz=core_clock_mhz,
                         util_percent=util_percent,
                         power_watts=power_watts,
+                        temperature_c=temperature_c,
                     )
                 )
             except Exception:
@@ -307,6 +319,7 @@ class LibreHardwareMonitorBridge:
         self._sensor_type_clock = None
         self._sensor_type_data = None
         self._sensor_type_small_data = None
+        self._sensor_type_temperature = None
 
         if os.name != "nt":
             self.status = "LibreHardwareMonitor: Windows only"
@@ -347,6 +360,7 @@ class LibreHardwareMonitorBridge:
             self._sensor_type_clock = SensorType.Clock
             self._sensor_type_data = SensorType.Data
             self._sensor_type_small_data = SensorType.SmallData
+            self._sensor_type_temperature = SensorType.Temperature
 
             computer = Computer()
             computer.IsCpuEnabled = True
@@ -376,12 +390,16 @@ class LibreHardwareMonitorBridge:
             for sub in hw.SubHardware:
                 queue.append(sub)
 
-    def collect_cpu_ram_power(self) -> tuple[Optional[float], Optional[float]]:
+    def collect_cpu_ram_telemetry(
+        self,
+    ) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
         if not self.available:
-            return None, None
+            return None, None, None, None
 
         cpu_candidates: list[float] = []
         ram_candidates: list[float] = []
+        cpu_temp_candidates: list[float] = []
+        ram_temp_candidates: list[float] = []
 
         try:
             for hw in self._iter_hardware():
@@ -389,29 +407,40 @@ class LibreHardwareMonitorBridge:
                 hw_type = str(hw.HardwareType).lower()
 
                 for sensor in hw.Sensors:
-                    if sensor.SensorType != self._sensor_type_power:
-                        continue
                     if sensor.Value is None:
                         continue
 
                     sensor_name = str(sensor.Name).lower()
                     value = float(sensor.Value)
 
-                    if "cpu" in hw_type:
-                        # Prefer package-level or total CPU power over individual rails/cores.
-                        if any(k in sensor_name for k in ("package", "total", "cpu", "ppt")):
-                            cpu_candidates.append(value)
-                    elif "memory" in hw_type or "ram" in hw_type:
-                        ram_candidates.append(value)
+                    if sensor.SensorType == self._sensor_type_power:
+                        if "cpu" in hw_type:
+                            # Prefer package-level or total CPU power over individual rails/cores.
+                            if any(k in sensor_name for k in ("package", "total", "cpu", "ppt")):
+                                cpu_candidates.append(value)
+                        elif "memory" in hw_type or "ram" in hw_type:
+                            ram_candidates.append(value)
 
-                    if any(k in sensor_name for k in ("dram", "dimm", "ram", "memory")):
-                        ram_candidates.append(value)
+                        if any(k in sensor_name for k in ("dram", "dimm", "ram", "memory")):
+                            ram_candidates.append(value)
+
+                    elif sensor.SensorType == self._sensor_type_temperature:
+                        if "cpu" in hw_type:
+                            if any(k in sensor_name for k in ("package", "cpu", "die", "tdie", "tctl")):
+                                cpu_temp_candidates.append(value)
+                        elif "memory" in hw_type or "ram" in hw_type:
+                            ram_temp_candidates.append(value)
+
+                        if any(k in sensor_name for k in ("dram", "dimm", "ram", "memory")):
+                            ram_temp_candidates.append(value)
         except Exception:
-            return None, None
+            return None, None, None, None
 
         cpu_power = max(cpu_candidates) if cpu_candidates else None
         ram_power = max(ram_candidates) if ram_candidates else None
-        return cpu_power, ram_power
+        cpu_temp = max(cpu_temp_candidates) if cpu_temp_candidates else None
+        ram_temp = max(ram_temp_candidates) if ram_temp_candidates else None
+        return cpu_power, ram_power, cpu_temp, ram_temp
 
     @staticmethod
     def _data_value_to_mib(value: float, sensor_type: Any) -> int:
@@ -437,6 +466,7 @@ class LibreHardwareMonitorBridge:
                 util_percent: Optional[float] = None
                 core_clock_mhz: Optional[int] = None
                 power_watts: Optional[float] = None
+                temperature_c: Optional[float] = None
                 mem_used_mib: Optional[int] = None
                 mem_total_mib: Optional[int] = None
                 mem_free_mib: Optional[int] = None
@@ -467,6 +497,10 @@ class LibreHardwareMonitorBridge:
                     elif sensor_type == self._sensor_type_power:
                         if "total" in sensor_name or "package" in sensor_name or "gpu" in sensor_name:
                             power_watts = value if power_watts is None else max(power_watts, value)
+
+                    elif sensor_type == self._sensor_type_temperature:
+                        if "core" in sensor_name or "gpu" in sensor_name or "hotspot" in sensor_name:
+                            temperature_c = value if temperature_c is None else max(temperature_c, value)
 
                     elif sensor_type in (self._sensor_type_data, self._sensor_type_small_data):
                         if "d3d dedicated memory used" in sensor_name:
@@ -514,6 +548,7 @@ class LibreHardwareMonitorBridge:
                         core_clock_mhz=core_clock_mhz,
                         util_percent=util_percent,
                         power_watts=power_watts,
+                        temperature_c=temperature_c,
                     )
                 )
         except Exception:
@@ -559,9 +594,58 @@ class MetricRow(QWidget):
         root.addLayout(top)
         root.addWidget(self.bar)
 
+    @staticmethod
+    def _blend_channel(start: int, end: int, ratio: float) -> int:
+        return int(round(start + (end - start) * ratio))
+
+    @classmethod
+    def _interpolate_color(cls, percent: float) -> QColor:
+        p = max(0.0, min(100.0, percent))
+        # Piecewise gradient: light blue at 0, pink at 45, red at 80+.
+        if p <= 45.0:
+            ratio = p / 45.0 if 45.0 else 0.0
+            start = QColor("#A8E4FF")
+            end = QColor("#FF8FC9")
+        elif p <= 80.0:
+            ratio = (p - 45.0) / 35.0
+            start = QColor("#FF8FC9")
+            end = QColor("#FF4D4D")
+        else:
+            ratio = (p - 80.0) / 20.0
+            start = QColor("#FF4D4D")
+            end = QColor("#D7263D")
+
+        return QColor(
+            cls._blend_channel(start.red(), end.red(), ratio),
+            cls._blend_channel(start.green(), end.green(), ratio),
+            cls._blend_channel(start.blue(), end.blue(), ratio),
+        )
+
+    def _apply_bar_color(self, percent: float) -> None:
+        base = self._interpolate_color(percent)
+        glow = base.lighter(125)
+        self.bar.setStyleSheet(
+            (
+                "QProgressBar {"
+                "border: 1px solid #DDB2C1;"
+                "border-radius: 7px;"
+                "background: #FFEAF1;"
+                "}"
+                "QProgressBar::chunk {"
+                "border-radius: 7px;"
+                "background: qlineargradient("
+                "x1: 0, y1: 0, x2: 1, y2: 0,"
+                f"stop: 0 {glow.name()},"
+                f"stop: 1 {base.name()}"
+                ");"
+                "}"
+            )
+        )
+
     def set_percent(self, percent: float, text: str) -> None:
         bounded = max(0, min(100, int(round(percent))))
         self.bar.setValue(bounded)
+        self._apply_bar_color(float(bounded))
         self.value.setText(text)
 
     def set_text(self, text: str) -> None:
@@ -576,6 +660,7 @@ class GPUCard(QGroupBox):
         self.vram_row = MetricRow("GPU Memory")
         self.shared_row = MetricRow("Shared Memory")
         self.util_row = MetricRow("GPU Utilization")
+        self.temp_row = MetricRow("Temperature")
         self.clock_row = MetricRow("Core Clock", with_bar=False)
         self.power_row = MetricRow("Power Draw", with_bar=False)
 
@@ -585,6 +670,7 @@ class GPUCard(QGroupBox):
         layout.addWidget(self.vram_row)
         layout.addWidget(self.shared_row)
         layout.addWidget(self.util_row)
+        layout.addWidget(self.temp_row)
         layout.addWidget(self.clock_row)
         layout.addWidget(self.power_row)
 
@@ -610,6 +696,12 @@ class GPUCard(QGroupBox):
         else:
             self.util_row.set_percent(stats.util_percent, f"{stats.util_percent:.1f}%")
 
+        if stats.temperature_c is None:
+            self.temp_row.set_percent(0, "N/A")
+        else:
+            temp_percent = max(0.0, min(100.0, stats.temperature_c))
+            self.temp_row.set_percent(temp_percent, f"{stats.temperature_c:.1f} C")
+
         if stats.core_clock_mhz is None:
             self.clock_row.set_text("N/A")
         else:
@@ -627,20 +719,30 @@ class SystemCard(QGroupBox):
         self.setObjectName("DeviceCard")
 
         self.cpu_row = MetricRow("CPU Utilization")
+        self.cpu_temp_row = MetricRow("CPU Temperature")
         self.cpu_power_row = MetricRow("CPU Power", with_bar=False)
         self.ram_row = MetricRow("System RAM")
+        self.ram_temp_row = MetricRow("RAM Temperature")
         self.ram_power_row = MetricRow("RAM Power", with_bar=False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 16, 14, 14)
         layout.setSpacing(12)
         layout.addWidget(self.cpu_row)
+        layout.addWidget(self.cpu_temp_row)
         layout.addWidget(self.cpu_power_row)
         layout.addWidget(self.ram_row)
+        layout.addWidget(self.ram_temp_row)
         layout.addWidget(self.ram_power_row)
 
     def apply_stats(self, stats: SystemStats) -> None:
         self.cpu_row.set_percent(stats.cpu_percent, f"{stats.cpu_percent:.1f}%")
+
+        if stats.cpu_temp_c is None:
+            self.cpu_temp_row.set_percent(0, "N/A")
+        else:
+            cpu_temp_percent = max(0.0, min(100.0, stats.cpu_temp_c))
+            self.cpu_temp_row.set_percent(cpu_temp_percent, f"{stats.cpu_temp_c:.1f} C")
 
         if stats.cpu_power_watts is None:
             self.cpu_power_row.set_text("N/A")
@@ -651,6 +753,12 @@ class SystemCard(QGroupBox):
             stats.ram_percent,
             f"{stats.ram_used_gib:.2f} / {stats.ram_total_gib:.2f} GiB ({stats.ram_percent:.1f}%)",
         )
+
+        if stats.ram_temp_c is None:
+            self.ram_temp_row.set_percent(0, "N/A")
+        else:
+            ram_temp_percent = max(0.0, min(100.0, stats.ram_temp_c))
+            self.ram_temp_row.set_percent(ram_temp_percent, f"{stats.ram_temp_c:.1f} C")
 
         if stats.ram_power_watts is None:
             self.ram_power_row.set_text("N/A")
@@ -714,7 +822,7 @@ class Dashboard(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(18, 12, 18, 12)
 
-        title = QLabel("Sakura Telemetry")
+        title = QLabel("Sakura Load Monitor")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
@@ -860,6 +968,8 @@ class Dashboard(QMainWindow):
                 existing.core_clock_mhz = item.core_clock_mhz
             if existing.power_watts is None and item.power_watts is not None:
                 existing.power_watts = item.power_watts
+            if existing.temperature_c is None and item.temperature_c is not None:
+                existing.temperature_c = item.temperature_c
 
         return list(by_name.values())
 
@@ -899,15 +1009,17 @@ class Dashboard(QMainWindow):
         ram_used_gib = (mem.total - mem.available) / (1024 ** 3)
         ram_percent = float(mem.percent)
 
-        cpu_power_watts, ram_power_watts = self.lhm.collect_cpu_ram_power()
+        cpu_power_watts, ram_power_watts, cpu_temp_c, ram_temp_c = self.lhm.collect_cpu_ram_telemetry()
 
         return SystemStats(
             cpu_percent=cpu_percent,
             cpu_power_watts=cpu_power_watts,
+            cpu_temp_c=cpu_temp_c,
             ram_total_gib=ram_total_gib,
             ram_used_gib=ram_used_gib,
             ram_percent=ram_percent,
             ram_power_watts=ram_power_watts,
+            ram_temp_c=ram_temp_c,
         )
 
     def refresh(self) -> None:
@@ -1026,11 +1138,7 @@ class Dashboard(QMainWindow):
             }}
             QProgressBar#SakuraBar::chunk {{
                 border-radius: 7px;
-                background: qlineargradient(
-                    x1: 0, y1: 0, x2: 1, y2: 0,
-                    stop: 0 #F39AB5,
-                    stop: 1 #D87093
-                );
+                background: #F39AB5;
             }}
             QScrollArea {{
                 border: none;
