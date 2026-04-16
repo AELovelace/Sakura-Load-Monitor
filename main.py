@@ -119,11 +119,22 @@ def ensure_runtime_and_relaunch() -> bool:
 
     try:
         if not target_python.exists():
-            subprocess.run(
-                ["py", "-3.11", "-m", "venv", ".venv311"],
-                cwd=str(project_root),
-                check=True,
-            )
+            created = False
+            for _ver in ("3.11", "3.12", "3.13"):
+                try:
+                    subprocess.run(
+                        ["py", f"-{_ver}", "-m", "venv", ".venv311"],
+                        cwd=str(project_root),
+                        check=True,
+                    )
+                    created = True
+                    break
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+            if not created:
+                print("Bootstrap failed: no compatible Python (3.11–3.13) found via the 'py' launcher.")
+                print("Install Python 3.11, 3.12, or 3.13 to enable LHM and AMD GPU telemetry.")
+                return False
 
         subprocess.run(
             [str(target_python), "-m", "pip", "install", "--upgrade", "pip"],
@@ -923,55 +934,50 @@ class Dashboard(QMainWindow):
 
     @staticmethod
     def _merge_gpu_stats(nvml_stats: list[GPUStats], lhm_stats: list[GPUStats]) -> list[GPUStats]:
-        by_name: dict[str, GPUStats] = {}
+        merged = list(nvml_stats)
+        lhm_matched: set[int] = set()
 
-        def norm(name: str) -> str:
-            normalized = "".join(ch.lower() for ch in name if ch.isalnum() or ch.isspace())
-            for token in ("nvidia", "amd", "radeon", "geforce"):
-                normalized = normalized.replace(token, " ")
-            return " ".join(normalized.split())
+        def apply_missing_fields(target: GPUStats, source: GPUStats) -> None:
+            if target.vram_total_mib <= 0 and source.vram_total_mib > 0:
+                target.vram_total_mib = source.vram_total_mib
+                target.vram_used_mib = source.vram_used_mib
+                target.vram_percent = source.vram_percent
+            if target.shared_total_mib <= 0 and source.shared_total_mib > 0:
+                target.shared_total_mib = source.shared_total_mib
+                target.shared_used_mib = source.shared_used_mib
+                target.shared_percent = source.shared_percent
+            if target.util_percent is None and source.util_percent is not None:
+                target.util_percent = source.util_percent
+            if target.core_clock_mhz is None and source.core_clock_mhz is not None:
+                target.core_clock_mhz = source.core_clock_mhz
+            if target.power_watts is None and source.power_watts is not None:
+                target.power_watts = source.power_watts
 
-        def name_matches(left: str, right: str) -> bool:
-            if left == right:
-                return True
-            if not left or not right:
-                return False
-            return left in right or right in left
+        # Match each NVML GPU with at most one LHM GPU so identical names don't collapse.
+        for nvml_item in merged:
+            nvml_key = Dashboard._normalize_gpu_name(nvml_item.name)
+            best_index: Optional[int] = None
 
-        for item in nvml_stats:
-            by_name[norm(item.name)] = item
+            for idx, lhm_item in enumerate(lhm_stats):
+                if idx in lhm_matched:
+                    continue
+                lhm_key = Dashboard._normalize_gpu_name(lhm_item.name)
+                if Dashboard._gpu_name_matches(nvml_key, lhm_key):
+                    best_index = idx
+                    break
 
-        for item in lhm_stats:
-            key = norm(item.name)
-            existing = by_name.get(key)
-            if existing is None:
-                for existing_key, existing_value in by_name.items():
-                    if name_matches(existing_key, key):
-                        existing = existing_value
-                        key = existing_key
-                        break
-            if existing is None:
-                by_name[key] = item
+            if best_index is None:
                 continue
 
-            if existing.vram_total_mib <= 0 and item.vram_total_mib > 0:
-                existing.vram_total_mib = item.vram_total_mib
-                existing.vram_used_mib = item.vram_used_mib
-                existing.vram_percent = item.vram_percent
-            if existing.shared_total_mib <= 0 and item.shared_total_mib > 0:
-                existing.shared_total_mib = item.shared_total_mib
-                existing.shared_used_mib = item.shared_used_mib
-                existing.shared_percent = item.shared_percent
-            if existing.util_percent is None and item.util_percent is not None:
-                existing.util_percent = item.util_percent
-            if existing.core_clock_mhz is None and item.core_clock_mhz is not None:
-                existing.core_clock_mhz = item.core_clock_mhz
-            if existing.power_watts is None and item.power_watts is not None:
-                existing.power_watts = item.power_watts
-            if existing.temperature_c is None and item.temperature_c is not None:
-                existing.temperature_c = item.temperature_c
+            lhm_matched.add(best_index)
+            apply_missing_fields(nvml_item, lhm_stats[best_index])
 
-        return list(by_name.values())
+        # Include GPUs only visible through LHM.
+        for idx, lhm_item in enumerate(lhm_stats):
+            if idx not in lhm_matched:
+                merged.append(lhm_item)
+
+        return merged
 
     def collect_gpu_sources(self) -> tuple[list[GPUStats], int, int]:
         nvml_stats = self.monitor.collect()
