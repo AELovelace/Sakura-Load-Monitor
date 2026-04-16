@@ -608,10 +608,9 @@ class MetricRow(QWidget):
         root.addWidget(self.bar)
 
     @staticmethod
-    def temperature_to_percent(temp_c: float, cool_c: float = 30.0, hot_c: float = 90.0) -> float:
-        if hot_c <= cool_c:
-            return max(0.0, min(100.0, temp_c))
-        return max(0.0, min(100.0, (temp_c - cool_c) * 100.0 / (hot_c - cool_c)))
+    def temperature_to_percent(temp_c: float) -> float:
+        # 0°C = 0%, 100°C = 100% linear scale
+        return max(0.0, min(100.0, temp_c))
 
     @staticmethod
     def _blend_channel(start: int, end: int, ratio: float) -> int:
@@ -620,16 +619,22 @@ class MetricRow(QWidget):
     @classmethod
     def _interpolate_color(cls, percent: float) -> QColor:
         p = max(0.0, min(100.0, percent))
-        # Piecewise gradient: light blue at 0, pink at 45, red at 80+.
-        if p <= 45.0:
-            ratio = p / 45.0 if 45.0 else 0.0
+        # Color gradient: light blue 0-30%, pink 30-45%, red 45-80%, dark red 80-100%.
+        if p <= 30.0:
+            # Stay light blue from 0-30%
+            return QColor("#A8E4FF")
+        elif p <= 45.0:
+            # Transition from light blue to pink (30-45%)
+            ratio = (p - 30.0) / 15.0
             start = QColor("#A8E4FF")
             end = QColor("#FF8FC9")
         elif p <= 80.0:
+            # Transition from pink to red (45-80%)
             ratio = (p - 45.0) / 35.0
             start = QColor("#FF8FC9")
             end = QColor("#FF4D4D")
         else:
+            # Transition from red to darker red (80-100%)
             ratio = (p - 80.0) / 20.0
             start = QColor("#FF4D4D")
             end = QColor("#D7263D")
