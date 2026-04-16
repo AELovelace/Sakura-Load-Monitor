@@ -39,6 +39,30 @@ Run:
 python main.py
 ```
 
+Build for deployment:
+
+```powershell
+.\compile.ps1 -Mode Share -Clean
+```
+
+Build as a single EXE:
+
+```powershell
+.\compile.ps1 -Mode SingleExe -Clean
+```
+
+In VS Code, run either:
+
+- `Compile Sakura Load Monitor (Share)` for the network-share-friendly one-dir build
+- `Compile Sakura Load Monitor (Single EXE)` for a single-file build
+
+Build outputs:
+
+- Share mode: `dist/SakuraLoadMonitor/` and run `dist/SakuraLoadMonitor/SakuraLoadMonitor.exe`
+- Single EXE mode: `dist/SakuraLoadMonitor-SingleExe.exe`
+
+The share build is intended to be copied as a folder and can be run from a network share. The single-EXE build hides `_internal`, but PyInstaller still extracts runtime files to a temp folder when it starts.
+
 The app can bootstrap itself:
 
 - If `.venv311` does not exist, it creates it with Python 3.11.

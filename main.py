@@ -41,8 +41,11 @@ except Exception:
     clr = None
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-LIB_DIR = PROJECT_ROOT / "lib"
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+APP_ROOT = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", APP_ROOT)).resolve()
+PROJECT_ROOT = APP_ROOT
+LIB_DIR = APP_ROOT / "lib"
 LHM_VERSION = "0.9.6"
 LHM_ARCHIVE_NAME = "lhm_netfx.zip"
 LHM_ARCHIVE_URLS = [
@@ -107,7 +110,14 @@ class CoverBackgroundWidget(QWidget):
         super().paintEvent(event)
 
 
+def bundle_path(*parts: str) -> Path:
+    return BUNDLE_ROOT.joinpath(*parts)
+
+
 def ensure_runtime_and_relaunch() -> bool:
+    if IS_FROZEN:
+        return False
+
     project_root = PROJECT_ROOT
     target_python = project_root / ".venv311" / "Scripts" / "python.exe"
 
@@ -304,6 +314,9 @@ def _find_lhm_dll() -> Optional[Path]:
 
     candidates.extend(
         [
+            bundle_path("lib", "LibreHardwareMonitorLib.dll"),
+            APP_ROOT / "LibreHardwareMonitorLib.dll",
+            APP_ROOT / "lib" / "LibreHardwareMonitorLib.dll",
             Path("LibreHardwareMonitorLib.dll"),
             Path("lib") / "LibreHardwareMonitorLib.dll",
             Path(os.environ.get("ProgramFiles", "")) / "LibreHardwareMonitor" / "LibreHardwareMonitorLib.dll",
@@ -852,7 +865,7 @@ class Dashboard(QMainWindow):
         self.lhm = LibreHardwareMonitorBridge()
         self.gpu_cards: list[GPUCard] = []
 
-        root = CoverBackgroundWidget("res/bg.jpg")
+        root = CoverBackgroundWidget(str(bundle_path("res", "bg.jpg")))
         self.setCentralWidget(root)
 
         container = QVBoxLayout(root)
